@@ -479,16 +479,32 @@
                 }
             }
 
-            async callLangflowAPI(message) {
+                async callLangflowAPI(message, retries = 2) {
+                const API_ENDPOINT = 'https://backend-1-cc3n.onrender.com/chat';
+                const TIMEOUT_DURATION = 50000; // 50 seconds
+                
                 try {
-                    const response = await fetch('https://backend-1-cc3n.onrender.com/chat', {
+                    // Create abort controller for timeout
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_DURATION);
+
+                    const response = await fetch(API_ENDPOINT, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ message, session_id: this.sessionId }),
-                        connection : "keep-alive"
+                        body: JSON.stringify({ 
+                            message, 
+                            session_id: this.sessionId 
+                        }),
+                        signal: controller.signal
                     });
                     
+                    clearTimeout(timeoutId); // Clear timeout if request completes
+                    
                     if (!response.ok) {
+                        // Handle specific HTTP errors differently
+                        if (response.status === 504) {
+                            throw new Error('The server is taking too long to respond. Please try again.');
+                        }
                         throw new Error(`HTTP Error: ${response.status}`);
                     }
                     
@@ -498,16 +514,42 @@
                         throw new Error(data.error || 'API request failed');
                     }
                     
-                    // Format the response (convert markdown bold to HTML)
+                    // Format the response (convert markdown to HTML)
                     if (data.response) {
-                        const formattedResponse = data.response.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+                        // Enhanced markdown to HTML conversion
+                        const formattedResponse = data.response
+                            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') // bold
+                            .replace(/\*(.*?)\*/g, '<em>$1</em>') // italic
+                            .replace(/`(.*?)`/g, '<code>$1</code>'); // code
                         return formattedResponse;
-                    } else {
-                        return "I couldn't process your request.";
                     }
+                    
+                    return "I couldn't process your request. Please try again with a different question.";
+                    
                 } catch (error) {
                     console.error('API Error:', error);
-                    throw error;
+                    
+                    // Retry for timeout or gateway errors
+                    if (retries > 0 && (
+                        error.name === 'AbortError' || 
+                        error.message.includes('504') ||
+                        error.message.includes('timed out')
+                    )) {
+                        console.log(`Retrying... (${retries} attempts left)`);
+                        await new Promise(resolve => setTimeout(resolve, 1000 * (3 - retries))); // progressive delay
+                        return this.callLangflowAPI(message, retries - 1);
+                    }
+                    
+                    // Return user-friendly error messages
+                    if (error.name === 'AbortError') {
+                        throw new Error('Request timed out. The server is taking too long to respond.');
+                    }
+                    
+                    if (error.message.includes('Failed to fetch')) {
+                        throw new Error('Network error. Please check your internet connection.');
+                    }
+                    
+                    throw new Error(error.message || 'An unexpected error occurred. Please try again later.');
                 }
             }
 
